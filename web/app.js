@@ -1,3 +1,21 @@
+/* ============ Sign-in ============ */
+/* Every request to the device needs the session cookie. When the device says
+   the session is gone (it restarted, or sat idle), go back to the sign-in page
+   instead of leaving each card to fail in its own way. Requests to other hosts
+   (GitHub, the error-text mirror) are left alone. */
+(function(){
+  var realFetch = window.fetch;
+  window.fetch = function(input){
+    var p = realFetch.apply(this, arguments);
+    var url = (typeof input === 'string') ? input : ((input && input.url) || '');
+    if (url.charAt(0) !== '/' || url.charAt(1) === '/') return p;
+    return p.then(function(r){
+      if (r.status === 401) location.href = '/login';
+      return r;
+    });
+  };
+})();
+
 /* ============ Loader / section dispatcher ============ */
 var SECTION_LABELS = {
   printer: 'Printer Settings',
@@ -1539,7 +1557,11 @@ function hmsText(map, code, dev){
 var HMS_WIKI_INDEX = 'https://wiki.bambulab.com/en/hms/home';
 function hmsWikiUrl(code){
   var m = _hmsTexts && _hmsTexts.wiki, p = m && m[hmsBareCode(code)];
-  return p ? 'https://wiki.bambulab.com/en/' + p : HMS_WIKI_INDEX;
+  /* The path comes from a file on another site and ends up inside an href on a
+     signed-in page, so it is held to a plain wiki path. Anything else - a
+     quote, a scheme, a ".." - gets the index link instead. */
+  var plain = (typeof p === 'string') && /^[A-Za-z0-9_\/.-]+$/.test(p) && p.indexOf('..') < 0;
+  return plain ? 'https://wiki.bambulab.com/en/' + p : HMS_WIKI_INDEX;
 }
 
 function hmsRender(){
@@ -1803,6 +1825,7 @@ function startOta(){
     }
   };
   xhr.onload = function(){
+    if (xhr.status === 401){ location.href = '/login'; return; }
     try {
       var d = JSON.parse(xhr.responseText);
       if (d.status === 'ok'){ bar.style.width = '100%'; pct.textContent = '100%'; stat.style.color = 'var(--success)'; stat.textContent = d.message; waitForReboot(stat); }
@@ -1881,8 +1904,8 @@ function switchFwTab(t){
 function checkForUpdates(){
   var res = document.getElementById('updateResult'), info = document.getElementById('updateInfo');
   res.style.color = 'var(--info)'; res.textContent = 'Checking...'; info.style.display = 'none'; _autoOtaUrl = '';
-  fetch('https://api.github.com/repos/Keralots/BambuHelper/releases/latest')
-    .then(function(r){ if (!r.ok) throw new Error('GitHub API returned ' + r.status); return r.json(); })
+  fetch('https://api.github.com/repos/' + DEV.repo + '/releases/latest')
+    .then(function(r){ if (r.status === 404) throw new Error('no release is published in ' + DEV.repo); if (!r.ok) throw new Error('GitHub API returned ' + r.status); return r.json(); })
     .then(function(d){
       var latest = d.tag_name, current = DEV.fw;
       function parseVer(v){ var m = v.replace(/^v/,'').match(/^(\d+)\.(\d+)(?:\.(\d+))?(.*)$/); return m ? {major:parseInt(m[1]),minor:parseInt(m[2]),patch:m[3]?parseInt(m[3]):0,pre:m[4]!==''} : null; }
@@ -1950,7 +1973,37 @@ function rebootDevice(){
 function factoryReset(){
   if (!confirm('Factory reset wipes ALL settings (WiFi, printers, gauge layout). Continue?')) return;
   if (!confirm('Are you absolutely sure? This cannot be undone.')) return;
-  location = '/reset';
+  var done = function(){
+    document.body.innerHTML = '<div style="text-align:center;padding-top:80px;font-family:sans-serif"><h2 style="color:#F85149">Factory Reset</h2><p style="color:#8B949E;margin-top:10px">Restarting into WiFi setup. The device shows its hotspot name and a new password on its screen.</p></div>';
+  };
+  /* The device restarts the moment it has wiped its settings, so the answer
+     often never arrives - a dropped connection here means it worked. */
+  fetch('/reset',{method:'POST'}).then(function(r){
+    if (r.status === 401 || r.status === 403){ showToast('Factory reset refused - sign in again'); return; }
+    done();
+  }).catch(done);
+}
+
+/* ============ Portal password / sign out ============ */
+function changePortalPassword(){
+  var cur = document.getElementById('pw_cur'), nw = document.getElementById('pw_new'), nw2 = document.getElementById('pw_new2');
+  var st = document.getElementById('pwStatus');
+  function say(ok, t){ st.style.color = ok ? 'var(--success)' : 'var(--danger)'; st.textContent = t; }
+  if (!cur.value){ say(false, 'Enter the current password.'); return; }
+  if (nw.value.length < 10 || nw.value.length > 64){ say(false, 'The new password needs 10 to 64 characters.'); return; }
+  if (nw.value !== nw2.value){ say(false, 'The two new passwords do not match.'); return; }
+  var p = new URLSearchParams(); p.append('cur', cur.value); p.append('new', nw.value);
+  fetch('/auth/password',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d.status === 'ok'){ say(true, 'Password changed. Other browsers have been signed out.'); cur.value = ''; nw.value = ''; nw2.value = ''; }
+      else say(false, d.message || 'The password could not be changed.');
+    })
+    .catch(function(){ say(false, 'Could not reach the device.'); });
+}
+function signOut(){
+  var go = function(){ location.href = '/login'; };
+  fetch('/logout',{method:'POST'}).then(go).catch(go);
 }
 
 /* ============ After-print reveal ============ */

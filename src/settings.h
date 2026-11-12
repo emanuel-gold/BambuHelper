@@ -458,6 +458,26 @@ void saveCloudPassword(const char* password);
 bool loadCloudPassword(char* buf, size_t bufLen);
 void clearCloudPassword();
 
+// ---------------------------------------------------------------------------
+//  Portal access control
+//
+//  Every device carries its own random password. It protects the setup hotspot
+//  (WPA2 key) and, until the user picks a different one, the settings page. It
+//  is only ever shown on the device's own screen.
+// ---------------------------------------------------------------------------
+const char* getDevicePassword();          // "" until ensureDevicePassword() ran
+// Create and store the device password if there is none yet. Call only once
+// the radio is up: that is when the hardware RNG is a true random source.
+bool ensureDevicePassword();
+bool webPasswordIsCustom();               // the user replaced the device password
+bool checkWebPassword(const char* candidate);
+bool setWebPassword(const char* password); // false: rejected by policy or not stored
+// True once somebody has signed in to the portal. Until then the Wi-Fi
+// connected screen keeps showing the password, so a device set up over USB
+// (which never shows the hotspot screen for long) is not locked out.
+bool webLoginSeen();
+void markWebLoginSeen();
+
 // RGB565 <-> HTML hex conversion
 uint16_t htmlToRgb565(const char* hex);
 void rgb565ToHtml(uint16_t color, char* buf);  // buf must be >= 8 chars

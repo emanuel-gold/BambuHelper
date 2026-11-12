@@ -76,10 +76,10 @@ function saveWifi(){
   document.getElementById('msg').innerHTML='<span style="color:#58A6FF">Saving...</span>';
   var d=new URLSearchParams();d.append('ssid',s);d.append('pass',p);
   fetch('/save/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})
-    .then(function(){document.body.innerHTML='<div style="text-align:center;padding-top:80px"><h2 style="color:#3FB950">WiFi Saved!</h2><p style="color:#8B949E;margin-top:10px">Restarting... Connect to your WiFi and open the device IP address in a browser.</p></div>';})
+    .then(function(r){if(r.status===401){location.href='/login';return;}if(!r.ok)throw new Error('HTTP '+r.status);document.body.innerHTML='<div style="text-align:center;padding-top:80px"><h2 style="color:#3FB950">WiFi Saved!</h2><p style="color:#8B949E;margin-top:10px">Restarting... Connect to your WiFi and open the device IP address in a browser.</p></div>';})
     .catch(function(e){document.getElementById('msg').style.color='#F85149';document.getElementById('msg').textContent='Connection error';console.warn('saveWifi:',e);});
 }
-fetch('/wifi/diag').then(function(r){return r.json();}).then(function(d){
+fetch('/wifi/diag').then(function(r){if(r.status===401){location.href='/login';}return r.json();}).then(function(d){
   if(!d||d.kind==='none')return;
   var q='"'+d.ssid+'"',db=d.rssi?' ('+d.rssi+' dBm)':'',t,m;
   var H={
@@ -1167,7 +1167,7 @@ static const char PAGE_HTML_2[] PROGMEM = R"rawliteral(
 <div class="section" id="sec-wifi" hidden>
   <div class="section-intro">
     <h2>WiFi &amp; System</h2>
-    <p>Network credentials, settings backup, firmware updates, factory reset.</p>
+    <p>Network credentials, settings backup, firmware updates, portal password, factory reset.</p>
   </div>
 
   <div class="card">
@@ -1228,8 +1228,8 @@ static const char PAGE_HTML_2[] PROGMEM = R"rawliteral(
   </div>
 
   <div class="card">
-    <div class="card-head"><div><h3>Settings backup</h3><p>Export or import all settings as JSON. Useful before reflashing. WiFi credentials stay out of the file.</p></div></div>
-    <div class="banner banner-warn"><span class="dot"></span><div><strong>Cloud token is not included.</strong><div class="small text-dim" style="margin-top:2px">You will need to paste a fresh token after importing.</div></div></div>
+    <div class="card-head"><div><h3>Settings backup</h3><p>Export or import all settings as JSON. Useful before reflashing. WiFi credentials and printer access codes stay out of the file.</p></div></div>
+    <div class="banner banner-warn"><span class="dot"></span><div><strong>Credentials are not included.</strong><div class="small text-dim" style="margin-top:2px">After importing, re-enter the access code of each printer, or paste a fresh cloud token.</div></div></div>
     <button type="button" class="btn btn-ghost" onclick="exportSettings()">Export backup</button>
     <div class="field" style="margin-top:var(--sp-3)">
       <label for="importFile">Import backup</label>
@@ -1245,10 +1245,11 @@ static const char PAGE_HTML_2[] PROGMEM = R"rawliteral(
     <div class="card-head">
       <div><h3>Firmware update</h3></div>
       <div class="hstack" style="gap:var(--sp-3);align-items:center">
-        <a href="https://github.com/Keralots/BambuHelper/releases" target="_blank" class="small" style="color:var(--accent)">Release notes</a>
+        <a href="https://github.com/%OTA_REPO%/releases" target="_blank" rel="noopener" class="small" style="color:var(--accent)">Release notes</a>
         <span class="mono small text-dim">current: %FW_VER%</span>
       </div>
     </div>
+    <div class="banner banner-warn"><span class="dot"></span><div><strong>This is a hardened build.</strong><div class="small text-dim" style="margin-top:2px">Only install firmware built from <span class="mono">%OTA_REPO%</span>. A stock BambuHelper release has no portal sign-in and would remove it.</div></div></div>
 )rawliteral"
 #ifdef ENABLE_OTA_AUTO
 R"rawliteral(
@@ -1322,6 +1323,28 @@ R"rawliteral(
       </div>
       <div id="rollbackStatus" role="status" aria-live="polite" class="small" style="margin-top:var(--sp-2)"></div>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><div><h3>Portal password</h3><p>Every page and setting here needs a sign-in. %PW_NOTE%</p></div></div>
+    <div class="field">
+      <label for="pw_cur">Current password</label>
+      <input type="password" id="pw_cur" data-nodirty autocomplete="current-password" maxlength="64">
+    </div>
+    <div class="field">
+      <label for="pw_new">New password</label>
+      <input type="password" id="pw_new" data-nodirty autocomplete="new-password" maxlength="64">
+      <div class="hint">10 to 64 characters. Changing it signs out every other browser. If you forget it, erase and reflash the device over USB.</div>
+    </div>
+    <div class="field">
+      <label for="pw_new2">Repeat new password</label>
+      <input type="password" id="pw_new2" data-nodirty autocomplete="new-password" maxlength="64">
+    </div>
+    <div class="action-bar">
+      <button type="button" class="btn btn-primary" onclick="changePortalPassword()">Change password</button>
+      <button type="button" class="btn btn-ghost" onclick="signOut()">Sign out</button>
+    </div>
+    <div id="pwStatus" role="status" aria-live="polite" class="small" style="margin-top:var(--sp-2)"></div>
   </div>
 
   <div class="card" style="border-color:rgba(220, 69, 56, 0.30)">
@@ -1489,7 +1512,7 @@ R"rawliteral(
 <div class="scrim" id="scrim"></div>
 <div class="toast" id="toast" role="status" aria-live="polite">Saved!</div>
 
-<script>var DEV={board:'%BOARD%',fw:'%FW_VER%',flashMb:'%FLASHMB%',otaSlot:'%OTASLOT%',round:'%ISROUND%',fixedAudio:'%FIXED_AUDIO%',hmsFull:'%HMSFULL%',boardBtn:'%BOARDBTN%'};</script>
+<script>var DEV={board:'%BOARD%',fw:'%FW_VER%',flashMb:'%FLASHMB%',otaSlot:'%OTASLOT%',round:'%ISROUND%',fixedAudio:'%FIXED_AUDIO%',hmsFull:'%HMSFULL%',boardBtn:'%BOARDBTN%',repo:'%OTA_REPO%'};</script>
 <script src="/app.js?v=%JSVER%"></script>
 </body>
 </html>

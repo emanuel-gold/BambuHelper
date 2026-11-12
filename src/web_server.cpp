@@ -1,6 +1,8 @@
 #include "web_server.h"
 #include <new>
 #include "web_template.h"
+#include "web_auth.h"
+#include "web_auth_logic.h"
 #include "settings.h"
 #include "bambu_state.h"
 #include "bambu_mqtt.h"
@@ -613,11 +615,10 @@ static void handleTimezones() {
   server.sendContent("");  // terminate chunked response
 }
 
+// POST only: a factory reset must not be something a link or an image tag on
+// another page can trigger.
 static void handleReset() {
-  server.send(200, "text/html",
-    "<html><body style='background:#0D1117;color:#E6EDF3;text-align:center;padding-top:80px;font-family:sans-serif'>"
-    "<h2 style='color:#F85149'>Factory Reset</h2>"
-    "<p>Restarting...</p></body></html>");
+  server.send(200, "application/json", "{\"status\":\"ok\"}");
   resetSettings();  // clears NVS and calls ESP.restart()
 }
 
@@ -1723,7 +1724,9 @@ static void handleSettingsExport() {
     p["name"] = cfg.name;
     p["ip"] = cfg.ip;
     p["serial"] = cfg.serial;
-    p["accessCode"] = cfg.accessCode;
+    // No access code: like the WiFi password and the cloud token it is a
+    // credential, and the backup is a plain-text file. Import still accepts it
+    // from older backups.
     p["cloudUserId"] = cfg.cloudUserId;
     p["region"] = (uint8_t)cfg.region;
     JsonArray slots = p["gaugeSlots"].to<JsonArray>();
@@ -1974,21 +1977,11 @@ static volatile bool otaAutoInProgress = false;
 static volatile int  otaAutoProgress   = 0;
 static String        otaAutoStatus     = "";
 
+// Only a release asset of OTA_GITHUB_REPO, built for this board. GitHub
+// answers that URL with a redirect to its asset host, which the updater
+// follows over verified TLS - the caller never gets to name that host.
 static bool isExpectedOtaAssetUrl(const String& url) {
-  if (url.length() == 0) return false;
-  if (!url.startsWith("https://github.com/") &&
-      !url.startsWith("https://objects.githubusercontent.com/") &&
-      !url.startsWith("https://release-assets.githubusercontent.com/")) {
-    return false;
-  }
-
-  int q = url.indexOf('?');
-  String clean = q >= 0 ? url.substring(0, q) : url;
-  int slash = clean.lastIndexOf('/');
-  String file = slash >= 0 ? clean.substring(slash + 1) : clean;
-
-  String prefix = "BambuHelper-" BOARD_VARIANT "-";
-  return file.startsWith(prefix) && file.endsWith("-ota.bin");
+  return waOtaUrlAllowed(url.c_str(), OTA_GITHUB_REPO, BOARD_VARIANT);
 }
 #endif
 
@@ -1998,7 +1991,21 @@ static void gaugeColorsFromJson(JsonObject obj, GaugeColors& gc) {
   if (obj["value"].is<const char*>()) gc.value = htmlToRgb565(obj["value"]);
 }
 
+// The web server also calls an upload callback for a POST that is NOT a
+// multipart form (its "raw body" path). There is no upload object then, and
+// server.upload() would dereference a null pointer - a crash any request to an
+// upload route could cause. The parser decides on the Content-Type header, so
+// the same test here tells the two paths apart.
+static bool isMultipartUpload() {
+  return server.header("Content-Type").startsWith("multipart/");
+}
+
 static void handleSettingsImportUpload() {
+  // Runs while the body is still arriving, before the route's own handler and
+  // its sign-in check - so it has to ask for itself. The route handler then
+  // answers 401.
+  if (!webAuthAllowed()) return;
+  if (!isMultipartUpload()) return;
   HTTPUpload& upload = server.upload();
   if (upload.status == UPLOAD_FILE_START) {
     settingsImportBuf = "";
@@ -2491,20 +2498,10 @@ static void otaAutoTaskFn(void* param) {
       int lastErr = httpUpdate.getLastError();
       String err = httpUpdate.getLastErrorString();
       Serial.printf("OTA auto: failed (%d) %s\n", lastErr, err.c_str());
-      // Retry once with setInsecure() in case CA bundle fails. Deterministic
-      // failures are excluded: HTTP_UE_TOO_LESS_SPACE (firmware exceeds the
-      // OTA slot) and HTTP_UE_BIN_FOR_WRONG_FLASH (image header mismatch)
-      // fail identically on any transport.
-      if (lastErr != HTTP_UE_TOO_LESS_SPACE && lastErr != HTTP_UE_BIN_FOR_WRONG_FLASH) {
-        client.setInsecure();
-        ret = httpUpdate.update(client, url);
-        if (ret == HTTP_UPDATE_OK) {
-          otaAutoProgress = 100;
-          otaAutoStatus = "done";
-          scheduleRestart(4000);
-          break;
-        }
-      }
+      // No retry without certificate checks. The image is not signed, so the
+      // TLS certificate is the only proof it came from GitHub; a failed
+      // handshake has to end the update, not downgrade it. The manual upload
+      // is still there when the CA bundle really is out of date.
       otaAutoStatus = "failed: " + err;
       if (lastErr == HTTP_UE_TOO_LESS_SPACE && isUnderPartitioned())
         otaAutoStatus += REPARTITION_HINT;
@@ -2569,6 +2566,10 @@ static void handleOtaStatus() {
 #endif // ENABLE_OTA_AUTO
 
 static void handleOtaUpload() {
+  // Same as the settings import: this callback writes flash before the route
+  // handler ever runs, so the sign-in check has to sit here too.
+  if (!webAuthAllowed()) return;
+  if (!isMultipartUpload()) return;
   HTTPUpload& upload = server.upload();
 
   if (upload.status == UPLOAD_FILE_START) {
@@ -2795,67 +2796,71 @@ void initWebServer() {
   server.on("/hotspot-detect.html", HTTP_GET, handleCaptiveDetect);  // Apple
   server.on("/canonical.html", HTTP_GET, handleCaptiveDetect);       // Firefox
 
-  server.on("/", HTTP_GET, handleRoot);
-  server.on("/save/wifi", HTTP_POST, handleSaveWifi);
-  server.on("/wifi/diag", HTTP_GET, handleWifiDiag);
-  server.on("/save/printer", HTTP_POST, handleSavePrinter);
-  server.on("/save/gaugelayout", HTTP_POST, handleSaveGaugeLayout);
-  server.on("/save/rotation", HTTP_POST, handleSaveRotation);
-  server.on("/save/power", HTTP_POST, handleSavePower);
-  server.on("/power/config", HTTP_GET, handleGetPowerConfig);
-  server.on("/power/stats",  HTTP_GET, handleGetPowerStats);
-  server.on("/power/control", HTTP_POST, handlePowerControl);
-  server.on("/buzzer/test", HTTP_POST, handleBuzzerTest);
-  server.on("/led/preview", HTTP_POST, handleLedPreview);
-  server.on("/led/test",    HTTP_POST, handleLedTest);
-  server.on("/printer/config", HTTP_GET, handlePrinterConfig);
-  server.on("/printer/clear", HTTP_POST, handleClearPrinter);
-  server.on("/light/config", HTTP_POST, handleLightConfig);
-  server.on("/light/set", HTTP_POST, handleLightSet);
-  server.on("/apply", HTTP_POST, handleApply);
-  server.on("/brightness", HTTP_GET, handleBrightnessPreview);
-  server.on("/status", HTTP_GET, handleStatus);
-  server.on("/api/timezones", HTTP_GET, handleTimezones);
-  server.on("/reset", HTTP_GET, handleReset);
-  server.on("/reboot", HTTP_POST, handleReboot);
-  server.on("/debug", HTTP_GET, handleDebug);
-  server.on("/card.bmp", HTTP_GET, handleCardBmp);
-  server.on("/screen.bmp", HTTP_GET, handleScreenBmp);
-  server.on("/debug/toggle", HTTP_POST, handleDebugToggle);
-  server.on("/save/toggle", HTTP_POST, handleToggleSetting);
-  server.on("/glow/test", HTTP_POST, handleGlowTest);
-  server.on("/app.css", HTTP_GET, handleAppCss);
-  server.on("/app.js", HTTP_GET, handleAppJs);
-  server.on("/cloud/logout", HTTP_POST, handleCloudLogout);
-  server.on("/cloud/printers", HTTP_GET, handleCloudPrinters);
+  server.on("/", HTTP_GET, webAuthWrap(handleRoot));
+  server.on("/save/wifi", HTTP_POST, webAuthWrap(handleSaveWifi));
+  server.on("/wifi/diag", HTTP_GET, webAuthWrap(handleWifiDiag));
+  server.on("/save/printer", HTTP_POST, webAuthWrap(handleSavePrinter));
+  server.on("/save/gaugelayout", HTTP_POST, webAuthWrap(handleSaveGaugeLayout));
+  server.on("/save/rotation", HTTP_POST, webAuthWrap(handleSaveRotation));
+  server.on("/save/power", HTTP_POST, webAuthWrap(handleSavePower));
+  server.on("/power/config", HTTP_GET, webAuthWrap(handleGetPowerConfig));
+  server.on("/power/stats",  HTTP_GET, webAuthWrap(handleGetPowerStats));
+  server.on("/power/control", HTTP_POST, webAuthWrap(handlePowerControl));
+  server.on("/buzzer/test", HTTP_POST, webAuthWrap(handleBuzzerTest));
+  server.on("/led/preview", HTTP_POST, webAuthWrap(handleLedPreview));
+  server.on("/led/test",    HTTP_POST, webAuthWrap(handleLedTest));
+  server.on("/printer/config", HTTP_GET, webAuthWrap(handlePrinterConfig));
+  server.on("/printer/clear", HTTP_POST, webAuthWrap(handleClearPrinter));
+  server.on("/light/config", HTTP_POST, webAuthWrap(handleLightConfig));
+  server.on("/light/set", HTTP_POST, webAuthWrap(handleLightSet));
+  server.on("/apply", HTTP_POST, webAuthWrap(handleApply));
+  server.on("/brightness", HTTP_GET, webAuthWrap(handleBrightnessPreview));
+  server.on("/status", HTTP_GET, webAuthWrap(handleStatus));
+  server.on("/api/timezones", HTTP_GET, webAuthWrap(handleTimezones));
+  server.on("/reset", HTTP_POST, webAuthWrap(handleReset));
+  server.on("/reboot", HTTP_POST, webAuthWrap(handleReboot));
+  server.on("/debug", HTTP_GET, webAuthWrap(handleDebug));
+  server.on("/card.bmp", HTTP_GET, webAuthWrap(handleCardBmp));
+  server.on("/screen.bmp", HTTP_GET, webAuthWrap(handleScreenBmp));
+  server.on("/debug/toggle", HTTP_POST, webAuthWrap(handleDebugToggle));
+  server.on("/save/toggle", HTTP_POST, webAuthWrap(handleToggleSetting));
+  server.on("/glow/test", HTTP_POST, webAuthWrap(handleGlowTest));
+  server.on("/app.css", HTTP_GET, webAuthWrap(handleAppCss));
+  server.on("/app.js", HTTP_GET, webAuthWrap(handleAppJs));
+  server.on("/cloud/logout", HTTP_POST, webAuthWrap(handleCloudLogout));
+  server.on("/cloud/printers", HTTP_GET, webAuthWrap(handleCloudPrinters));
 #if HAS_CLOUD_LOGIN
-  server.on("/cloud/login", HTTP_POST, handleCloudLoginStart);
-  server.on("/cloud/login/code", HTTP_POST, handleCloudLoginCode);
-  server.on("/cloud/login/status", HTTP_GET, handleCloudLoginStatus);
-  server.on("/cloud/login/selftest", HTTP_GET, handleCloudSelfTest);
+  server.on("/cloud/login", HTTP_POST, webAuthWrap(handleCloudLoginStart));
+  server.on("/cloud/login/code", HTTP_POST, webAuthWrap(handleCloudLoginCode));
+  server.on("/cloud/login/status", HTTP_GET, webAuthWrap(handleCloudLoginStatus));
+  server.on("/cloud/login/selftest", HTTP_GET, webAuthWrap(handleCloudSelfTest));
 #endif
-  server.on("/lan/scan", HTTP_POST, handleLanScan);
-  server.on("/lan/scan", HTTP_GET, handleLanScan);
-  server.on("/settings/export", HTTP_GET, handleSettingsExport);
-  server.on("/settings/import", HTTP_POST, handleSettingsImportFinish, handleSettingsImportUpload);
-  server.on("/ota/upload", HTTP_POST, handleOtaFinish, handleOtaUpload);
+  server.on("/lan/scan", HTTP_POST, webAuthWrap(handleLanScan));
+  server.on("/lan/scan", HTTP_GET, webAuthWrap(handleLanScan));
+  server.on("/settings/export", HTTP_GET, webAuthWrap(handleSettingsExport));
+  server.on("/settings/import", HTTP_POST, webAuthWrap(handleSettingsImportFinish), handleSettingsImportUpload);
+  server.on("/ota/upload", HTTP_POST, webAuthWrap(handleOtaFinish), handleOtaUpload);
   // Deliberately outside ENABLE_OTA_AUTO: rolling back must work exactly on
   // the boards too constrained for the online-update path.
-  server.on("/ota/slots",    HTTP_GET,  handleOtaSlots);
-  server.on("/ota/rollback", HTTP_POST, handleOtaRollback);
+  server.on("/ota/slots",    HTTP_GET,  webAuthWrap(handleOtaSlots));
+  server.on("/ota/rollback", HTTP_POST, webAuthWrap(handleOtaRollback));
 #ifdef ENABLE_OTA_AUTO
-  server.on("/ota/auto",   HTTP_POST, handleOtaAuto);
-  server.on("/ota/status", HTTP_GET,  handleOtaStatus);
+  server.on("/ota/auto",   HTTP_POST, webAuthWrap(handleOtaAuto));
+  server.on("/ota/status", HTTP_GET, webAuthWrap(handleOtaStatus));
 #endif
   server.onNotFound(handleNotFound);
-  const char* otaHeaders[] = {"X-MD5"};
-  server.collectHeaders(otaHeaders, 1);
+  // Sign-in routes + the request headers to keep (one list for the whole
+  // server: X-MD5 is the upload checksum the OTA handler reads, Content-Type
+  // tells a real file upload from a raw body).
+  static const char* const otaHeaders[] = {"X-MD5", "Content-Type"};
+  webAuthBegin(otaHeaders, 2);
   server.begin();
   Serial.println("Web server started on port 80");
 }
 
 void handleWebServer() {
   server.handleClient();
+  webAuthTick();
 
   if (otaMqttReinitPending) {
     bool otaBusy = otaInProgress;

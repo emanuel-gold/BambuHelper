@@ -800,7 +800,7 @@ static void drawAPMode() {
   tft.setTextColor(CLR_TEXT_DIM, CLR_BG);
   tft.drawString("Password:", cx, apPassLblY);
   tft.setTextColor(CLR_TEXT, CLR_BG);
-  tft.drawString(WIFI_AP_PASSWORD, cx, apPassY);
+  tft.drawString(getDevicePassword(), cx, apPassY);   // per-device, see settings.h
 
   // IP
   tft.setTextColor(CLR_TEXT_DIM, CLR_BG);
@@ -869,6 +869,17 @@ static void drawWiFiConnected() {
   tft.setTextColor(CLR_TEXT, CLR_BG);
   setFont(tft, LY_F_BODY);
   tft.drawString(WiFi.localIP().toString().c_str(), midX, midY + LY_SC(40));
+
+  // First run only: the portal password, until somebody has signed in once.
+  // A device set up over USB never dwells on the hotspot screen, so this is
+  // the one place its owner can read it. Not shown when the user has set a
+  // password of their own - the device password would then be the wrong one.
+  if (!webLoginSeen() && !webPasswordIsCustom() && getDevicePassword()[0]) {
+    tft.setTextColor(CLR_TEXT_DIM, CLR_BG);
+    tft.drawString("Web password:", midX, midY + LY_SC(62));
+    tft.setTextColor(CLR_CYAN, CLR_BG);
+    tft.drawString(getDevicePassword(), midX, midY + LY_SC(80));
+  }
 }
 
 // ---------------------------------------------------------------------------

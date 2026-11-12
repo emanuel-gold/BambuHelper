@@ -4,7 +4,10 @@
 // =============================================================================
 //  Firmware version
 // =============================================================================
-#define FW_VERSION          "v3.9.2"
+// "-h1": hardened fork build 1 (portal sign-in, per-device hotspot password,
+// no TLS fallbacks). The suffix keeps these binaries apart from the upstream
+// release of the same number, on the device's version pill and in file names.
+#define FW_VERSION          "v3.9.2-h1"
 
 // Sent on every Bambu cloud HTTPS call. Our own name: a borrowed slicer agent
 // string gets refused once Bambu retires that slicer version (#206).
@@ -99,7 +102,8 @@
 //  WiFi
 // =============================================================================
 #define WIFI_AP_PREFIX      "BambuHelper-"
-#define WIFI_AP_PASSWORD    "bambu1234"
+// The setup hotspot has no fixed password: each device generates its own on
+// first boot and shows it on its screen (getDevicePassword() in settings.h).
 #define WIFI_CONNECT_TIMEOUT 15000  // 15s STA connect timeout
 #define WIFI_RECONNECT_TIMEOUT 60000 // 60s before re-entering AP mode
 #define WIFI_BACKOFF_PHASE1_MS    10000   // 10s between attempts in phase 1
@@ -403,6 +407,16 @@
 // Boards that carry the full table on-device resolve text themselves and only
 // fall back to this for codes the table does not have.
 #define HMS_MIRROR_URL  "https://keralots.github.io/BambuHelper/errors/hms_en.json"
+
+// The one GitHub repository ("owner/name") the online updater will install
+// from, and the one the portal's update check asks about. The device refuses
+// any other download URL. This is the hardened fork: the upstream project's
+// release binaries do not carry the portal sign-in, so pointing this back at
+// upstream would let a single "Install update" click remove it. Publish your
+// own release assets (firmware/<ver>/*-ota.bin from tools/release.py) in the
+// repository named here to use online updates; with none published the check
+// simply reports that it found nothing.
+#define OTA_GITHUB_REPO  "emanuel-gold/BambuHelper"
 
 // Signing into a Bambu account from the device itself (portal form -> cloud
 // token, no Companion Tool). Every board carries it: gzipping the portal's CSS

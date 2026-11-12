@@ -27,6 +27,7 @@
 #include "timezones.h"
 #include "esp_ota_ops.h"   // OTASLOT token: next update partition size
 #include "tasmota.h"
+#include "web_auth_logic.h"   // waHtmlEscape
 #include <Arduino.h>
 
 #ifndef BOARD_NAME
@@ -44,6 +45,21 @@ static String ledHexColor(uint32_t rgb) {
   return String(buf);
 }
 
+// Escape a stored value for the page. Everything the user (or a settings
+// import, or a printer on the network) can put into a string field passes
+// through here before it reaches the HTML, so a name like `"><script>` is
+// shown as text instead of becoming markup in a signed-in browser.
+static String htmlEsc(const char* s) {
+  if (!s) return String();
+  const size_t cap = strlen(s) * 6 + 1;       // worst case: every char -> "&quot;"
+  char* buf = (char*)malloc(cap);
+  if (!buf) return String();                  // drop the value, never emit it raw
+  waHtmlEscape(s, buf, cap);
+  String out(buf);
+  free(buf);
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 //  Resolve a single template placeholder to its value.
 //  Returns true if name was a known placeholder (even if value is empty).
@@ -54,12 +70,12 @@ static bool resolvePlaceholder(const char* name, String& out) {
   char buf[8];
 
   // --- Printer ---
-  if (strcmp(name, "SSID") == 0)            { out = wifiSSID; return true; }
+  if (strcmp(name, "SSID") == 0)            { out = htmlEsc(wifiSSID); return true; }
   if (strcmp(name, "MODE_LOCAL") == 0)      { out = cfg.mode == CONN_LOCAL ? "selected" : ""; return true; }
   if (strcmp(name, "MODE_CLOUD_ALL") == 0)  { out = isCloudMode(cfg.mode) ? "selected" : ""; return true; }
-  if (strcmp(name, "PNAME") == 0)           { out = cfg.name; return true; }
-  if (strcmp(name, "IP") == 0)              { out = cfg.ip; return true; }
-  if (strcmp(name, "SERIAL") == 0)          { out = cfg.serial; return true; }
+  if (strcmp(name, "PNAME") == 0)           { out = htmlEsc(cfg.name); return true; }
+  if (strcmp(name, "IP") == 0)              { out = htmlEsc(cfg.ip); return true; }
+  if (strcmp(name, "SERIAL") == 0)          { out = htmlEsc(cfg.serial); return true; }
   if (strcmp(name, "REGION_US") == 0)       { out = cfg.region == REGION_US ? "selected" : ""; return true; }
   if (strcmp(name, "REGION_EU") == 0)       { out = cfg.region == REGION_EU ? "selected" : ""; return true; }
   if (strcmp(name, "REGION_CN") == 0)       { out = cfg.region == REGION_CN ? "selected" : ""; return true; }
@@ -68,7 +84,7 @@ static bool resolvePlaceholder(const char* name, String& out) {
     if (!loadCloudToken(tokenBuf, sizeof(tokenBuf))) { out = "No token set"; return true; }
     out = "Token active";
     char email[96];
-    if (loadCloudEmail(email, sizeof(email))) { out += " ("; out += email; out += ")"; }
+    if (loadCloudEmail(email, sizeof(email))) { out += " ("; out += htmlEsc(email); out += ")"; }
     return true;
   }
 
@@ -118,13 +134,13 @@ static bool resolvePlaceholder(const char* name, String& out) {
   // --- Network ---
   if (strcmp(name, "NET_DHCP") == 0)   { out = netSettings.useDHCP ? "selected" : ""; return true; }
   if (strcmp(name, "NET_STATIC") == 0) { out = netSettings.useDHCP ? "" : "selected"; return true; }
-  if (strcmp(name, "NET_IP") == 0)     { out = netSettings.staticIP; return true; }
-  if (strcmp(name, "NET_GW") == 0)     { out = netSettings.gateway; return true; }
-  if (strcmp(name, "NET_SN") == 0)     { out = netSettings.subnet; return true; }
-  if (strcmp(name, "NET_DNS") == 0)    { out = netSettings.dns; return true; }
+  if (strcmp(name, "NET_IP") == 0)     { out = htmlEsc(netSettings.staticIP); return true; }
+  if (strcmp(name, "NET_GW") == 0)     { out = htmlEsc(netSettings.gateway); return true; }
+  if (strcmp(name, "NET_SN") == 0)     { out = htmlEsc(netSettings.subnet); return true; }
+  if (strcmp(name, "NET_DNS") == 0)    { out = htmlEsc(netSettings.dns); return true; }
   if (strcmp(name, "SHOWIP") == 0)     { out = netSettings.showIPAtStartup ? "checked" : ""; return true; }
   if (strcmp(name, "MDNS_EN") == 0)    { out = netSettings.mdnsEnabled ? "checked" : ""; return true; }
-  if (strcmp(name, "MDNS_HOST") == 0)  { out = netSettings.hostname; return true; }
+  if (strcmp(name, "MDNS_HOST") == 0)  { out = htmlEsc(netSettings.hostname); return true; }
 
   // --- Clock ---
   if (strcmp(name, "USE24H") == 0)     { out = netSettings.use24h ? "checked" : ""; return true; }
@@ -624,7 +640,7 @@ static bool resolvePlaceholder(const char* name, String& out) {
     }
   }
 
-  // --- Custom gauge labels (*_LBL). Stored already sanitized, so emit raw. ---
+  // --- Custom gauge labels (*_LBL). Sanitized when stored; escaped again here. ---
   {
     static const struct { const char* tok; const char* val; } labels[] = {
       {"PRG_LBL", gaugeLabels.progress},   {"NOZ_LBL", gaugeLabels.nozzle},
@@ -638,13 +654,22 @@ static bool resolvePlaceholder(const char* name, String& out) {
       {"DOR_LBL", gaugeLabels.door},
     };
     for (auto& l : labels) {
-      if (strcmp(name, l.tok) == 0) { out = l.val; return true; }
+      if (strcmp(name, l.tok) == 0) { out = htmlEsc(l.val); return true; }
     }
   }
 
   // --- Status / version / board ---
   if (strcmp(name, "DBGLOG") == 0)       { out = mqttDebugLog ? "checked" : ""; return true; }
   if (strcmp(name, "FW_VER") == 0)       { out = FW_VERSION; return true; }
+  // The repository the update check and the release-notes link point at.
+  if (strcmp(name, "OTA_REPO") == 0)     { out = OTA_GITHUB_REPO; return true; }
+  // Which password the portal currently accepts, for the Security card.
+  if (strcmp(name, "PW_NOTE") == 0) {
+    out = webPasswordIsCustom()
+      ? "You set your own password. The setup hotspot still uses the device password shown on the device's screen."
+      : "Currently the device password - the one shown on the device's screen, also used for its setup hotspot.";
+    return true;
+  }
   // Update-size gate for the release check JS: OTA slot size in bytes and
   // physical flash chip size in MB (16 MB chip on a small slot => the fix is a
   // one-time web-flasher repartition, and the warning says so).
@@ -820,7 +845,7 @@ static bool resolvePlaceholder(const char* name, String& out) {
       out += String(i);
       out += "\">";
       const char* nm = printers[i].config.name;
-      if (nm[0] != '\0') out += nm;
+      if (nm[0] != '\0') out += htmlEsc(nm);
       else { out += "Printer "; out += String(i + 1); }
       out += "</option>";
     }

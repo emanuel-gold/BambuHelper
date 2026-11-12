@@ -18,7 +18,10 @@
       } catch (_) {}
     })();
   </script>
-  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+  <!-- Exact version, not "@10": a floating tag would run whatever is published
+       next, with access to the serial port. This build imports only its own
+       hashed chunks, so the pin covers everything it loads. -->
+  <script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
 </head>
 <body>
   <div class="app">
@@ -228,13 +231,13 @@
             </div>
             <div class="creds-row">
               <span class="creds-key">password</span>
-              <span class="creds-val">bambu1234</span>
+              <span class="creds-val">shown on the device screen</span>
             </div>
             <div class="creds-row">
               <span class="creds-key">open</span>
               <span class="creds-val"><a href="http://192.168.4.1">http://192.168.4.1</a></span>
             </div>
-            <p class="creds-note">XXXX is a unique 4-character suffix per device.</p>
+            <p class="creds-note">XXXX is a unique 4-character suffix per device. The password is unique per device too, and also signs you in to its config page.</p>
           </div>
 
           <ol class="step-list">

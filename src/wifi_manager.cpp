@@ -200,7 +200,16 @@ static void startAP() {
 
   // Use AP+STA so we can probe STA while serving the config portal
   WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(ssidBuf, WIFI_AP_PASSWORD);
+  // The hotspot is protected by this device's own random password, shown on
+  // its screen. Created here, after the radio is up, so it comes from the
+  // true random source. Without one there is no hotspot at all - an open or
+  // well-known-password network must never be the fallback.
+  if (!ensureDevicePassword()) {
+    Serial.println("WiFi: no device password - setup hotspot not started");
+    WiFi.mode(WIFI_STA);
+    return;
+  }
+  WiFi.softAP(ssidBuf, getDevicePassword());
 #if BOARD_NEEDS_WIFI_TX_LIMIT
   capTxPower();
   Serial.println("WiFi: TX power capped to 8.5 dBm in AP mode (C3 antenna workaround)");
@@ -295,11 +304,16 @@ static void completeWiFiStartup() {
 
   startMDNS();
 
-  // Show IP screen for 1.5 seconds if enabled
-  if (netSettings.showIPAtStartup) {
+  // Show IP screen for 1.5 seconds if enabled. Until somebody has signed in to
+  // the portal once, it is always shown and stays up longer: it is where a
+  // device that never showed its setup hotspot screen (provisioned over USB,
+  // or updated in place) tells its owner the portal password.
+  const bool firstRun = !webLoginSeen();
+  if (netSettings.showIPAtStartup || firstRun) {
     setScreenState(SCREEN_WIFI_CONNECTED);
     unsigned long ipStart = millis();
-    while (millis() - ipStart < 1500) {
+    const unsigned long holdMs = firstRun ? 12000UL : 1500UL;
+    while (millis() - ipStart < holdMs) {
       updateDisplay();
       flushFrame();  // JC3248W535: push sprite to panel during blocking loop
       delay(50);
@@ -312,6 +326,10 @@ static void beginStaConnectAttempt() {
   // DHCP option 12; the core applies it to the STA netif inside WiFi.mode().
   WiFi.setHostname(netSettings.hostname);
   WiFi.mode(WIFI_STA);
+  // The portal password has to exist before the web server can be reached,
+  // also on a device that never opens its setup hotspot (credentials already
+  // stored, or provisioned over USB). Radio is up from here on.
+  ensureDevicePassword();
   applyStaticNetworkConfig();
   WiFi.begin(wifiSSID, wifiPass);
 #if BOARD_NEEDS_WIFI_TX_LIMIT

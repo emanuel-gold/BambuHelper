@@ -9,6 +9,10 @@
 #include <nvs.h>           // nvs_get_stats for the storage-usage diagnostics
 #include "esp_ota_ops.h"   // running-slot label for recordBootSlotVersion()
 #include <cstring>   // memcpy/memmove/strlcpy used by the UTF-8 sanitizer helpers
+#include "web_auth_logic.h"   // device password alphabet + policy
+#include "esp_system.h"       // esp_fill_random
+#include <mbedtls/md.h>
+#include <mbedtls/pkcs5.h>
 
 // Global state
 PrinterSlot printers[MAX_PRINTERS];
@@ -67,6 +71,13 @@ bool quadPrinterBeta = false;
 bool wifiTxCapped = false;
 
 static Preferences prefs;
+
+// Portal access control (see settings.h). RAM copies of what NVS holds.
+static char devicePassword[WA_DEVICE_PASSWORD_LEN + 1] = {0};
+static bool    webPwCustom = false;
+static uint8_t webPwSalt[16] = {0};
+static uint8_t webPwHash[32] = {0};
+static bool    webLoginSeenFlag = false;
 
 // ---------------------------------------------------------------------------
 //  RGB565 <-> HTML hex conversion
@@ -420,6 +431,18 @@ void loadSettings() {
   // WiFi credentials
   strlcpy(wifiSSID, prefs.getString("wifiSSID", "").c_str(), sizeof(wifiSSID));
   strlcpy(wifiPass, prefs.getString("wifiPass", "").c_str(), sizeof(wifiPass));
+
+  // Portal access control. Anything malformed is treated as absent: a missing
+  // device password is regenerated, a damaged custom password falls back to it.
+  {
+    String dp = prefs.getString("dev_pass", "");
+    if (waDevicePasswordValid(dp.c_str())) strlcpy(devicePassword, dp.c_str(), sizeof(devicePassword));
+    else devicePassword[0] = '\0';
+    webPwCustom = prefs.isKey("wa_salt") && prefs.isKey("wa_hash") &&
+                  prefs.getBytes("wa_salt", webPwSalt, sizeof(webPwSalt)) == sizeof(webPwSalt) &&
+                  prefs.getBytes("wa_hash", webPwHash, sizeof(webPwHash)) == sizeof(webPwHash);
+    webLoginSeenFlag = prefs.getBool("wa_seen", false);
+  }
 
   brightness = prefs.getUChar("bright", 200);
   activePrinterIndex = prefs.getUChar("activePrt", 0);
@@ -1486,5 +1509,102 @@ bool loadCloudPassword(char* buf, size_t bufLen) {
 void clearCloudPassword() {
   prefs.begin(NVS_NAMESPACE, false);
   prefs.remove("cl_pass");
+  prefs.end();
+}
+
+// ---------------------------------------------------------------------------
+//  Portal access control
+// ---------------------------------------------------------------------------
+const char* getDevicePassword() { return devicePassword; }
+
+static void fillRandom(uint8_t* buf, size_t len) { esp_fill_random(buf, len); }
+
+bool ensureDevicePassword() {
+  if (devicePassword[0]) return true;
+  if (!waMakeDevicePassword(devicePassword, sizeof(devicePassword), fillRandom)) {
+    devicePassword[0] = '\0';
+    Serial.println("AUTH: could not create a device password");
+    return false;
+  }
+  prefs.begin(NVS_NAMESPACE, false);
+  // Not stored means a new one next boot. It is still shown on the screen, so
+  // the device stays usable; it must never fall back to a fixed password.
+  if (prefs.putString("dev_pass", devicePassword) != strlen(devicePassword)) {
+    Serial.println("AUTH: device password could not be stored - settings storage is full");
+  }
+  prefs.end();
+  return true;
+}
+
+bool webPasswordIsCustom() { return webPwCustom; }
+
+// PBKDF2-HMAC-SHA256. The count is small because this runs on the main loop;
+// what it buys is that a copy of the flash does not hand over a password the
+// user may also use elsewhere.
+#define WEB_PW_ITERATIONS 2000
+
+static bool derivePasswordHash(const char* password, const uint8_t* salt, uint8_t* out32) {
+  const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  if (!info) return false;
+  mbedtls_md_context_t ctx;
+  mbedtls_md_init(&ctx);
+  bool ok = mbedtls_md_setup(&ctx, info, 1) == 0 &&
+            mbedtls_pkcs5_pbkdf2_hmac(&ctx, (const unsigned char*)password, strlen(password),
+                                      salt, 16, WEB_PW_ITERATIONS, 32, out32) == 0;
+  mbedtls_md_free(&ctx);
+  return ok;
+}
+
+bool checkWebPassword(const char* candidate) {
+  if (!candidate) return false;
+  const size_t len = strlen(candidate);
+  if (len == 0 || len > WA_PASSWORD_MAX) return false;
+  if (webPwCustom) {
+    uint8_t h[32];
+    if (!derivePasswordHash(candidate, webPwSalt, h)) return false;
+    const bool ok = waCtEqual(h, webPwHash, sizeof(h));
+    memset(h, 0, sizeof(h));
+    return ok;
+  }
+  // No custom password: the device password, which fails closed while unset.
+  return waCtStrEqual(candidate, devicePassword);
+}
+
+bool setWebPassword(const char* password) {
+  if (!waPasswordAcceptable(password)) return false;
+  uint8_t salt[16], hash[32];
+  esp_fill_random(salt, sizeof(salt));
+  if (!derivePasswordHash(password, salt, hash)) return false;
+
+  prefs.begin(NVS_NAMESPACE, false);
+  bool ok = prefs.putBytes("wa_salt", salt, sizeof(salt)) == sizeof(salt) &&
+            prefs.putBytes("wa_hash", hash, sizeof(hash)) == sizeof(hash);
+  if (!ok) {
+    // Half a pair must not survive: the next boot would read it as "custom
+    // password set" against a hash that matches nothing.
+    prefs.remove("wa_salt");
+    prefs.remove("wa_hash");
+    if (webPwCustom) {            // put the previous password back
+      prefs.putBytes("wa_salt", webPwSalt, sizeof(webPwSalt));
+      prefs.putBytes("wa_hash", webPwHash, sizeof(webPwHash));
+    }
+  }
+  prefs.end();
+  if (ok) {
+    memcpy(webPwSalt, salt, sizeof(webPwSalt));
+    memcpy(webPwHash, hash, sizeof(webPwHash));
+    webPwCustom = true;
+  }
+  memset(hash, 0, sizeof(hash));
+  return ok;
+}
+
+bool webLoginSeen() { return webLoginSeenFlag; }
+
+void markWebLoginSeen() {
+  if (webLoginSeenFlag) return;
+  webLoginSeenFlag = true;
+  prefs.begin(NVS_NAMESPACE, false);
+  prefs.putBool("wa_seen", true);
   prefs.end();
 }

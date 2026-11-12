@@ -83,9 +83,11 @@ static int httpsRequestWith(WiFiClientSecure& tls, const char* method,
   return httpCode;
 }
 
-// Make an HTTPS request. Tries with CA-verified TLS first; if the
-// connection fails (CA mismatch, chain rotation), retries without
-// verification so deployed devices don't lose cloud connectivity.
+// Make an HTTPS request over CA-verified TLS. There is no retry without
+// verification: every caller sends the account token as a Bearer header, and
+// a handshake that fails is exactly what an interception looks like. If
+// Bambu's certificate chain ever outruns the bundled CA list the request
+// fails and the fix is a firmware update, not a silent downgrade.
 // Returns HTTP status code, or -1 on error. Response body in `response`.
 static int httpsRequest(const char* method, const char* url,
                         const char* body, const char* authToken,
@@ -96,15 +98,10 @@ static int httpsRequest(const char* method, const char* url,
   tls->setHandshakeTimeout(10);   // a handshake that never returns takes the
                                   // single-threaded web server down with it
 
-  // First attempt: proper CA verification
   tls->setCACertBundle(rootca_crt_bundle_start);
   int httpCode = httpsRequestWith(*tls, method, url, body, authToken, response, cookie);
-
   if (httpCode == -1) {
-    // TLS handshake likely failed — retry without verification
-    Serial.println("CLOUD: TLS verified request failed, retrying without CA check");
-    tls->setInsecure();
-    httpCode = httpsRequestWith(*tls, method, url, body, authToken, response, cookie);
+    Serial.println("CLOUD: request failed before an HTTP answer (connection or TLS verification)");
   }
 
   delete tls;
