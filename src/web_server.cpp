@@ -426,6 +426,25 @@ static void handleSaveGaugeLayout() {
 
 // Save WiFi + network settings (requires restart)
 static void handleSaveWifi() {
+  // First-time setup ends with a restart onto the home network, where the
+  // setup hotspot screen - the only place the device password is shown for
+  // long - is gone. So the setup page has to leave with a portal password the
+  // owner picked. Checked before anything is stored: a refused password must
+  // not half-apply the WiFi settings.
+  if (isAPMode() && !webPasswordIsCustom()) {
+    String chosen = server.arg("newpw");
+    if (!waPasswordAcceptable(chosen.c_str())) {
+      server.send(400, "application/json",
+                  "{\"status\":\"error\",\"message\":\"Choose a portal password of 10 to 64 characters (letters, digits, spaces, common symbols).\"}");
+      return;
+    }
+    if (!setWebPassword(chosen.c_str())) {
+      server.send(500, "application/json",
+                  "{\"status\":\"error\",\"message\":\"The portal password could not be stored - settings storage is full.\"}");
+      return;
+    }
+  }
+
   if (server.hasArg("ssid")) strlcpy(wifiSSID, server.arg("ssid").c_str(), sizeof(wifiSSID));
   if (server.hasArg("pass") && server.arg("pass").length() > 0) strlcpy(wifiPass, server.arg("pass").c_str(), sizeof(wifiPass));
 
@@ -2759,6 +2778,8 @@ static void handleWifiDiag() {
   doc["ch"] = fi.channel;
   doc["reason"] = fi.reason;
   doc["near"] = fi.nearName;
+  // Tells the setup page whether it still has to ask for a portal password.
+  doc["pwset"] = webPasswordIsCustom();
   String json;
   serializeJson(doc, json);
   server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");

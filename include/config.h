@@ -4,10 +4,10 @@
 // =============================================================================
 //  Firmware version
 // =============================================================================
-// "-h1": hardened fork build 1 (portal sign-in, per-device hotspot password,
+// "-hN": hardened fork build N (portal sign-in, per-device hotspot password,
 // no TLS fallbacks). The suffix keeps these binaries apart from the upstream
 // release of the same number, on the device's version pill and in file names.
-#define FW_VERSION          "v3.9.2-h1"
+#define FW_VERSION          "v3.9.2-h2"
 
 // Sent on every Bambu cloud HTTPS call. Our own name: a borrowed slicer agent
 // string gets refused once Bambu retires that slicer version (#206).

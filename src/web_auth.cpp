@@ -2,6 +2,7 @@
 #include "web_auth_logic.h"
 #include "web_template.h"   // the shared WebServer instance
 #include "settings.h"
+#include "wifi_manager.h"   // isAPMode
 #include "esp_system.h"     // esp_fill_random
 #include <new>
 
@@ -176,7 +177,7 @@ static const char LOGIN_TAIL[] PROGMEM = R"rawliteral(
 <input type="password" id="password" name="password" maxlength="64" autocomplete="current-password" autofocus required>
 <button type="submit">Sign in</button>
 </form>
-<p class="note">Unless you changed it, the password is the one the device shows on its own screen: under <em>Password</em> on the WiFi Setup screen, and under <em>Web password</em> after it joins your network. It is the same password as the setup hotspot's.</p>
+<p class="note">This is the portal password you chose during WiFi setup. If you never chose one, it is the password the device shows on its own screen: under <em>Password</em> on the WiFi Setup screen, and under <em>Web password</em> after it joins your network.</p>
 </div></body></html>
 )rawliteral";
 
@@ -231,7 +232,11 @@ static void handleLoginSubmit() {
 
   s_fails = 0;
   s_lockSecs = 0;
-  markWebLoginSeen();
+  // "Somebody has signed in" retires the password from the WiFi Connected
+  // screen. A sign-in on the setup hotspot must not count: that one happens
+  // before the device has ever been on the home network, and retiring the
+  // password there left the owner with no way to read it afterwards.
+  if (!isAPMode()) markWebLoginSeen();
 
   char hex[SESSION_TOKEN_LEN * 2 + 1];
   startSession(hex);

@@ -513,9 +513,9 @@ The device reboots automatically once the update is written; the web page reload
 1. **Flash** the firmware (see above)
 2. **Connect** to the `BambuHelper-XXXX` WiFi network. The password is shown on the device's screen under *Password* - every device generates its own, there is no default
 3. **Open** `192.168.4.1` in your browser and **sign in** with that same password
-4. **Enter** your home WiFi credentials and **Save** - the device restarts and connects to your WiFi
-5. **Note the IP address** shown on the ESP32 display after it connects to WiFi. Until you have signed in once, the same screen also shows the *Web password*
-6. **Open** that IP address in your browser and sign in to access the full web interface
+4. **Enter** your home WiFi credentials, **choose a portal password** of your own, and **Save** - the device restarts and connects to your WiFi
+5. **Note the IP address** shown on the ESP32 display after it connects to WiFi
+6. **Open** that IP address in your browser and sign in with the portal password you chose
 7. **Configure your printer:**
 
    **LAN Direct** (P1P, P1S, X1, X1C, X1E, A1, A1 Mini):
@@ -587,8 +587,8 @@ Copy the token from your browser cookies on https://bambulab.com (you must be lo
 
 This fork puts the whole web interface behind a sign-in. Nothing - not the status JSON, not the settings export, not a firmware upload - is served without it.
 
-- **The password** is a random 12-character one, unique to each device, created on first boot. It is the WPA2 key of the setup hotspot and the password of the web interface. It is only ever shown on the device's own screen: on the *WiFi Setup* screen, and on the *WiFi Connected* screen until somebody has signed in once.
-- **Change it** under *WiFi & System > Portal password* (10-64 characters). The setup hotspot keeps the device password.
+- **The password** is a random 12-character one, unique to each device, created on first boot. It is the WPA2 key of the setup hotspot and the password of the web interface. It is only ever shown on the device's own screen: on the *WiFi Setup* screen, and on the *WiFi Connected* screen until somebody has signed in over the home network (only relevant to a device provisioned over USB or updated in place, which never went through the setup page).
+- **You replace it during setup**: the WiFi setup page will not save without a portal password of your own (10-64 characters). Change it later under *WiFi & System > Portal password*. The setup hotspot keeps the device password.
 - **Forgot it?** Erase the flash over USB (`esptool erase_flash`) and flash again; the device generates a new one. A factory reset from the web interface also generates a new one, but needs a sign-in first.
 - **Sessions** last until 30 minutes of inactivity or a reboot. Five wrong passwords in a row start a wait that grows from 15 seconds to 5 minutes.
 - **Requests from other websites are refused**: every request must come from the device's own pages.

@@ -66,20 +66,37 @@ input:focus{border-color:#58A6FF}
   <label for="pass">WiFi Password</label>
   <input type="password" id="pass" placeholder="WiFi password">
   <div style="margin-top:6px"><input type="checkbox" id="showpass" onchange="document.getElementById('pass').type=this.checked?'text':'password'" style="vertical-align:middle"><label for="showpass" style="color:#8B949E;font-size:12px;margin:0 0 0 4px;display:inline">Show password</label></div>
+  <div id="pwBox">
+    <h2 style="margin-top:20px">Choose a portal password</h2>
+    <p style="font-size:12px;color:#8B949E;margin-bottom:4px">You sign in with this once the device is on your network. It replaces the password on the device's screen, which you will not see again after the restart. 10 to 64 characters.</p>
+    <label for="npw">Portal password</label>
+    <input type="password" id="npw" maxlength="64" autocomplete="new-password">
+    <label for="npw2">Repeat portal password</label>
+    <input type="password" id="npw2" maxlength="64" autocomplete="new-password">
+  </div>
   <button class="btn" onclick="saveWifi()">Save WiFi &amp; Restart</button>
   <div id="msg" role="status" aria-live="polite" aria-atomic="true" style="margin-top:10px;font-size:13px;text-align:center"></div>
 </div>
 <script>
+var needPw=true;
+function fail(t){var m=document.getElementById('msg');m.style.color='#F85149';m.textContent=t;}
 function saveWifi(){
   var s=document.getElementById('ssid').value,p=document.getElementById('pass').value;
-  if(!s){document.getElementById('msg').innerHTML='<span style="color:#F85149">Enter SSID</span>';return;}
-  document.getElementById('msg').innerHTML='<span style="color:#58A6FF">Saving...</span>';
+  if(!s){fail('Enter SSID');return;}
   var d=new URLSearchParams();d.append('ssid',s);d.append('pass',p);
+  if(needPw){
+    var n=document.getElementById('npw').value;
+    if(n.length<10||n.length>64){fail('The portal password needs 10 to 64 characters.');return;}
+    if(n!==document.getElementById('npw2').value){fail('The two portal passwords do not match.');return;}
+    d.append('newpw',n);
+  }
+  document.getElementById('msg').innerHTML='<span style="color:#58A6FF">Saving...</span>';
   fetch('/save/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})
-    .then(function(r){if(r.status===401){location.href='/login';return;}if(!r.ok)throw new Error('HTTP '+r.status);document.body.innerHTML='<div style="text-align:center;padding-top:80px"><h2 style="color:#3FB950">WiFi Saved!</h2><p style="color:#8B949E;margin-top:10px">Restarting... Connect to your WiFi and open the device IP address in a browser.</p></div>';})
-    .catch(function(e){document.getElementById('msg').style.color='#F85149';document.getElementById('msg').textContent='Connection error';console.warn('saveWifi:',e);});
+    .then(function(r){if(r.status===401){location.href='/login';return;}if(!r.ok){return r.json().then(function(e){fail(e.message||'Could not save.');},function(){fail('Could not save.');});}document.body.innerHTML='<div style="text-align:center;padding-top:80px"><h2 style="color:#3FB950">WiFi Saved!</h2><p style="color:#8B949E;margin-top:10px">Restarting... Connect to your WiFi, open the IP address shown on the device, and sign in with your portal password.</p></div>';})
+    .catch(function(e){fail('Connection error');console.warn('saveWifi:',e);});
 }
 fetch('/wifi/diag').then(function(r){if(r.status===401){location.href='/login';}return r.json();}).then(function(d){
+  if(d&&d.pwset){needPw=false;document.getElementById('pwBox').hidden=true;}
   if(!d||d.kind==='none')return;
   var q='"'+d.ssid+'"',db=d.rssi?' ('+d.rssi+' dBm)':'',t,m;
   var H={
